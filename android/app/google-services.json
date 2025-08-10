@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "360712574434",
+    "project_id": "authenticationtest-d4ad2",
+    "storage_bucket": "authenticationtest-d4ad2.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:360712574434:android:1eb80b14f6e8284c0b15bb",
+        "android_client_info": {
+          "package_name": "com.example.firebase"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCAW8l29UwrzpkZyxBpOwjhOuvtuyAkz2I"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

@@ -54,6 +54,13 @@ final ScrollController _localScrollController = ScrollController();
     _checkSuperAdmin();
   }
 
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    _localScrollController.dispose();
+    super.dispose();
+  }
+
   String formatContactNumber(String number) {
     if (number.startsWith('+63')) {
       return '0${number.substring(3)}';

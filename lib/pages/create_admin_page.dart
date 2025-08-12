@@ -26,6 +26,8 @@ class _CreateAdminPageState extends State<CreateAdminPage> {
   int entriesPerPage = 10;
   int currentPage = 0;
 
+
+
   // Role options
   final List<Map<String, String>> _roleOptions = [
     {'value': 'admin', 'label': 'Admin'},
@@ -68,6 +70,10 @@ class _CreateAdminPageState extends State<CreateAdminPage> {
     });
   }
 
+
+
+
+
   Future<void> _createAdmin({required String name}) async {
     if (_formKey.currentState!.validate()) {
       _formKey.currentState!.save();
@@ -76,79 +82,120 @@ class _CreateAdminPageState extends State<CreateAdminPage> {
       });
 
       try {
-        // Step 1: Create Firebase Auth user
-        print('Creating Firebase Auth user for: $_email');
-        UserCredential userCredential = await _secondaryAuth.createUserWithEmailAndPassword(
-          email: _email,
-          password: _password,
-        );
-        print('Firebase Auth user created successfully');
-        await _secondaryAuth.signOut();
-
-        // Step 2: Create Firestore document
+        // Generate a simple 6-digit verification code
+        String verificationCode = (100000 + (DateTime.now().millisecondsSinceEpoch % 900000)).toString();
+        
+        // Create Firestore document first with verification code
         print('Creating Firestore document for: $_email');
         bool isSuperAdmin = _selectedRole == 'admin' && _isSuperAdmin;
-        
-        // Check if current user is authenticated
-        final currentUser = _auth.currentUser;
-        print('Current user: ${currentUser?.email}');
-        print('Current user is authenticated: ${currentUser != null}');
         
         Map<String, dynamic> adminData = {
           'email': _email,
           'username': _username,
           'name': name,
           'role': _selectedRole,
-          'superAdmin': isSuperAdmin,
+          'superAdmin': false, // Regular admins are not super admin
           'createdAt': FieldValue.serverTimestamp(),
           'lastLogin': FieldValue.serverTimestamp(),
           'isOnline': false,
+          'emailVerified': false,
+          'verificationDate': null,
+          'verificationCode': verificationCode,
+          'isLegacyAccount': false, // New accounts are not legacy
         };
         
         print('Admin data to save: $adminData');
         
-        // Try to write to Firestore
+        // Create Firestore document
         DocumentReference docRef = _firestore.collection('admins').doc(_email);
         await docRef.set(adminData);
         print('Firestore document created successfully');
         
-        // Verify the document was created
-        DocumentSnapshot verifyDoc = await docRef.get();
-        if (verifyDoc.exists) {
-          print('Document verification successful: ${verifyDoc.data()}');
-        } else {
-          print('Document verification failed: document does not exist');
-        }
-        
-        // Show success message
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('${_selectedRole == 'barangay' ? 'Barangay account' : 'Admin account'} created successfully!'),
-            backgroundColor: Colors.green,
-          ),
-        );
-        
-        // Close the dialog and navigate back to login
+        // Show success message with verification code
         if (context.mounted) {
-          Navigator.of(context).pop(); // Close the dialog
-          // Navigate to login page
-          Navigator.of(context).pushReplacementNamed('/login');
+          showDialog(
+            context: context,
+            barrierDismissible: false,
+            builder: (BuildContext context) {
+              return AlertDialog(
+                backgroundColor: Colors.white,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                title: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [
+                    Text('Account Created Successfully'),
+                    IconButton(
+                      icon: Icon(Icons.close),
+                      onPressed: () => Navigator.of(context).pop(),
+                    ),
+                  ],
+                ),
+                content: Container(
+                  width: 400,
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Icon(
+                        Icons.check_circle,
+                        color: Colors.green,
+                        size: 64,
+                      ),
+                      SizedBox(height: 16),
+                      Text(
+                        '${_selectedRole == 'barangay' ? 'Barangay account' : 'Admin account'} created successfully!',
+                        style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                        textAlign: TextAlign.center,
+                      ),
+                      SizedBox(height: 16),
+                      Text(
+                        'Verification Code:',
+                        style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
+                      ),
+                      SizedBox(height: 8),
+                      Container(
+                        padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+                        decoration: BoxDecoration(
+                          color: Colors.blue.shade50,
+                          border: Border.all(color: Colors.blue.shade200),
+                          borderRadius: BorderRadius.circular(8),
+                        ),
+                        child: Text(
+                          verificationCode,
+                          style: TextStyle(
+                            fontSize: 24,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.blue.shade700,
+                            letterSpacing: 2,
+                          ),
+                        ),
+                      ),
+                      SizedBox(height: 16),
+                      Text(
+                        'Please provide this verification code to the user. They will need to enter this code during their first login to create their Firebase Auth account and verify their account.',
+                        style: TextStyle(fontSize: 14, color: Colors.grey.shade600),
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                  ),
+                ),
+                actions: [
+                  ElevatedButton(
+                    onPressed: () {
+                      Navigator.of(context).pop();
+                      Navigator.of(context).pop(); // Close create admin dialog
+                    },
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: const Color.fromARGB(255, 0, 48, 96),
+                      foregroundColor: Colors.white,
+                    ),
+                    child: Text('OK'),
+                  ),
+                ],
+              );
+            },
+          );
         }
-      } on FirebaseAuthException catch (e) {
-        print('Firebase Auth Exception: ${e.code} - ${e.message}');
-        String errorMessage = 'An error occurred';
-        if (e.code == 'email-already-in-use') {
-          errorMessage = 'This email is already in use.';
-        } else if (e.code == 'weak-password') {
-          errorMessage = 'Password is too weak.';
-        }
-        // Show error message to user
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(errorMessage),
-            backgroundColor: Colors.red,
-          ),
-        );
+        
       } on FirebaseException catch (e) {
         print('Firebase Exception: ${e.code} - ${e.message}');
         ScaffoldMessenger.of(context).showSnackBar(
@@ -159,7 +206,6 @@ class _CreateAdminPageState extends State<CreateAdminPage> {
         );
       } catch (e) {
         print('General Exception: $e');
-        // Handle other errors (like Firestore errors)
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text('Error creating admin: ${e.toString()}'),
@@ -571,6 +617,8 @@ class _CreateAdminPageState extends State<CreateAdminPage> {
     );
   }
 
+
+
   @override
   Widget build(BuildContext context) {
     if (_checkingRole) {
@@ -654,6 +702,7 @@ class _CreateAdminPageState extends State<CreateAdminPage> {
                       Expanded(flex: 3, child: Center(child: Text("Email", style: TextStyle(fontWeight: FontWeight.bold)))),
                       Expanded(flex: 2, child: Center(child: Text("Date Created", style: TextStyle(fontWeight: FontWeight.bold)))),
                       Expanded(flex: 2, child: Center(child: Text("Status", style: TextStyle(fontWeight: FontWeight.bold)))),
+                      Expanded(flex: 2, child: Center(child: Text("Email Verified", style: TextStyle(fontWeight: FontWeight.bold)))),
                       Expanded(flex: 2, child: Center(child: Text("Actions", style: TextStyle(fontWeight: FontWeight.bold)))),
                     ],
                   ),
@@ -769,14 +818,37 @@ class _CreateAdminPageState extends State<CreateAdminPage> {
                                       adminId = (currentPage * entriesPerPage + index + 1);
                                     }
 
-                                    Timestamp? createdAtTimestamp = admin['createdAt'];
+                                    final Map<String, dynamic> adminMap = admin.data() as Map<String, dynamic>;
+
+                                    Timestamp? createdAtTimestamp = adminMap['createdAt'] as Timestamp?;
                                     String createdAtFormatted = 'No Date';
                                     if (createdAtTimestamp != null) {
                                       DateTime createdAt = createdAtTimestamp.toDate();
                                       createdAtFormatted = "${createdAt.month}/${createdAt.day}/${createdAt.year}";
                                     }
 
-                                    String name = admin['name'] ?? '';
+                                    String name = (adminMap['name'] ?? '') as String;
+
+                                    // Handle account verification status
+                                    final bool isLegacyAccount = adminMap['isLegacyAccount'] == true;
+                                    final bool hasEmailVerifiedField = adminMap.containsKey('emailVerified');
+                                    final bool isEmailVerified = hasEmailVerifiedField ? (adminMap['emailVerified'] == true) : false;
+                                    
+                                    String verificationStatus;
+                                    if (isLegacyAccount) {
+                                      verificationStatus = 'Legacy Account';
+                                    } else if (isEmailVerified) {
+                                      verificationStatus = 'Verified';
+                                    } else {
+                                      verificationStatus = 'Pending Verification';
+                                    }
+
+                                    String verificationDateFormatted = 'N/A';
+                                    Timestamp? verificationTimestamp = adminMap['verificationDate'] as Timestamp?;
+                                    if (verificationTimestamp != null) {
+                                      DateTime verificationDate = verificationTimestamp.toDate();
+                                      verificationDateFormatted = "${verificationDate.month}/${verificationDate.day}/${verificationDate.year}";
+                                    }
 
                                     return Container(
                                       height: rowHeight,
@@ -912,8 +984,8 @@ class _CreateAdminPageState extends State<CreateAdminPage> {
                                             flex: 2,
                                             child: Center(
                                               child: (() {
-                                                bool isOnline = admin['isOnline'] == true;
-                                                Timestamp? lastLoginTimestamp = admin['lastLogin'];
+                                                bool isOnline = adminMap['isOnline'] == true;
+                                                Timestamp? lastLoginTimestamp = adminMap['lastLogin'];
                                                 String lastLoginFormatted = 'Never';
                                                 if (lastLoginTimestamp != null) {
                                                   DateTime lastLogin = lastLoginTimestamp.toDate();
@@ -952,6 +1024,63 @@ class _CreateAdminPageState extends State<CreateAdminPage> {
                                           Expanded(
                                             flex: 2,
                                             child: Center(
+                                              child: Column(
+                                                mainAxisAlignment: MainAxisAlignment.center,
+                                                children: [
+                                                  Container(
+                                                    padding: EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                                                    decoration: BoxDecoration(
+                                                      color: verificationStatus == 'Verified'
+                                                          ? Colors.green.withOpacity(0.2)
+                                                          : verificationStatus == 'Legacy Account'
+                                                              ? Colors.grey.withOpacity(0.2)
+                                                              : Colors.orange.withOpacity(0.2),
+                                                      borderRadius: BorderRadius.circular(12),
+                                                      border: Border.all(
+                                                        color: verificationStatus == 'Verified'
+                                                            ? Colors.green
+                                                            : verificationStatus == 'Legacy Account'
+                                                                ? Colors.grey
+                                                                : Colors.orange,
+                                                        width: 1,
+                                                      ),
+                                                    ),
+                                                    child: Text(
+                                                      verificationStatus,
+                                                      textAlign: TextAlign.center,
+                                                      style: TextStyle(
+                                                        fontSize: 12,
+                                                        fontWeight: FontWeight.bold,
+                                                        color: verificationStatus == 'Verified'
+                                                            ? Colors.green.shade700
+                                                            : verificationStatus == 'Legacy Account'
+                                                                ? Colors.grey.shade700
+                                                                : Colors.orange.shade700,
+                                                      ),
+                                                    ),
+                                                  ),
+                                                  if (verificationStatus == 'Verified')
+                                                    Text(
+                                                      "Verified: $verificationDateFormatted",
+                                                      style: TextStyle(fontSize: 10, color: Colors.grey),
+                                                    ),
+                                                  if (verificationStatus == 'Legacy Account')
+                                                    Text(
+                                                      "Created before 2FA",
+                                                      style: TextStyle(fontSize: 10, color: Colors.grey),
+                                                    ),
+                                                  if (verificationStatus == 'Pending Verification')
+                                                    Text(
+                                                      "Needs verification code",
+                                                      style: TextStyle(fontSize: 10, color: Colors.orange),
+                                                    ),
+                                                ],
+                                              ),
+                                            ),
+                                          ),
+                                          Expanded(
+                                            flex: 2,
+                                            child: Center(
                                               child: Row(
                                                 mainAxisAlignment: MainAxisAlignment.center,
                                                 children: [
@@ -984,6 +1113,7 @@ class _CreateAdminPageState extends State<CreateAdminPage> {
                                                       ),
                                                     ),
                                                   ),
+
                                                 ],
                                               ),
                                             ),

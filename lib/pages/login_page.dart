@@ -15,14 +15,9 @@ class LoginPage extends StatefulWidget {
 class _LoginPageState extends State<LoginPage> {
   final usernameTextController = TextEditingController();
   final passwordTextController = TextEditingController();
-  final verificationCodeController = TextEditingController();
   String? emailError;
   String? passwordError;
-  String? verificationError;
   bool _isPasswordVisible = false;
-  bool _showVerificationDialog = false;
-  String? _pendingEmail;
-  String? _pendingPassword;
 
     Future<void> signIn() async {
     if (!mounted) return;
@@ -84,27 +79,13 @@ class _LoginPageState extends State<LoginPage> {
         return;
       }
 
-      // Check if this is a legacy account (no verification required)
+      // Enforce email verification only for non-legacy accounts
       bool isLegacyAccount = adminData['isLegacyAccount'] == true;
-
-      if (isLegacyAccount) {
-        // Legacy account - proceed with normal login
-        await _completeLogin(emailToUse, passwordTextController.text.trim());
-      } else {
-        // New account - check if email is verified
-        if (adminData['emailVerified'] == true) {
-          // Already verified - proceed with login
-          await _completeLogin(emailToUse, passwordTextController.text.trim());
-        } else {
-          // Not verified - show verification dialog
-          if (mounted) {
-            _pendingEmail = emailToUse;
-            _pendingPassword = passwordTextController.text.trim();
-            _showVerificationDialog = true;
-            setState(() {});
-          }
-        }
-      }
+      await _completeLogin(
+        emailToUse,
+        passwordTextController.text.trim(),
+        enforceEmailVerified: !isLegacyAccount,
+      );
     } catch (e) {
       if (mounted) {
         setState(() {
@@ -114,7 +95,7 @@ class _LoginPageState extends State<LoginPage> {
     }
   }
 
-  Future<void> _completeLogin(String email, String password) async {
+  Future<void> _completeLogin(String email, String password, {bool enforceEmailVerified = true}) async {
     try {
       // Sign in with Firebase Auth
       UserCredential userCredential = await FirebaseAuth.instance.signInWithEmailAndPassword(
@@ -124,10 +105,29 @@ class _LoginPageState extends State<LoginPage> {
 
       User? user = userCredential.user;
       if (user != null) {
+        // Optionally enforce email verification for new accounts
+        if (enforceEmailVerified) {
+          await user.reload();
+          user = FirebaseAuth.instance.currentUser;
+          if (!(user?.emailVerified ?? false)) {
+            try {
+              await user?.sendEmailVerification();
+            } catch (_) {}
+            await FirebaseAuth.instance.signOut();
+            if (mounted) {
+              setState(() {
+                emailError = "Email not verified. A verification link has been sent to your email.";
+              });
+            }
+            return;
+          }
+        }
+
         // Check if user exists in admins collection
+        final String emailDocId = (FirebaseAuth.instance.currentUser?.email) ?? email;
         DocumentSnapshot adminDoc = await FirebaseFirestore.instance
             .collection('admins')
-            .doc(user.email)
+            .doc(emailDocId)
             .get();
 
         if (adminDoc.exists) {
@@ -138,7 +138,7 @@ class _LoginPageState extends State<LoginPage> {
             // Update last login and mark as verified
             await FirebaseFirestore.instance
                 .collection('admins')
-                .doc(user.email)
+                .doc(emailDocId)
                 .update({
               'lastLogin': FieldValue.serverTimestamp(),
               'isOnline': true,
@@ -191,102 +191,7 @@ class _LoginPageState extends State<LoginPage> {
     }
   }
 
-  Future<void> _verifyCode() async {
-    if (!mounted) return;
-    
-    setState(() {
-      verificationError = null;
-    });
-
-    try {
-      final code = verificationCodeController.text.trim();
-      
-      if (code.isEmpty) {
-        setState(() {
-          verificationError = "Please enter the verification code.";
-        });
-        return;
-      }
-
-      // Get the admin document
-      DocumentSnapshot adminDoc = await FirebaseFirestore.instance
-          .collection('admins')
-          .doc(_pendingEmail)
-          .get();
-
-      if (!adminDoc.exists) {
-        setState(() {
-          verificationError = "Account not found.";
-        });
-        return;
-      }
-
-      final adminData = adminDoc.data() as Map<String, dynamic>?;
-      if (adminData == null) {
-        setState(() {
-          verificationError = "Invalid account data.";
-        });
-        return;
-      }
-
-      // Check if verification code matches
-      if (adminData['verificationCode'] != code) {
-        setState(() {
-          verificationError = "Invalid verification code.";
-        });
-        return;
-      }
-
-      // Code is valid - create Firebase Auth user and mark as verified
-      try {
-        // Create Firebase Auth user
-        UserCredential userCredential = await FirebaseAuth.instance.createUserWithEmailAndPassword(
-          email: _pendingEmail!,
-          password: _pendingPassword!,
-        );
-
-        // Update Firestore document
-        await FirebaseFirestore.instance
-            .collection('admins')
-            .doc(_pendingEmail)
-            .update({
-          'emailVerified': true,
-          'verificationDate': FieldValue.serverTimestamp(),
-          'verificationCode': null, // Remove the code after successful verification
-        });
-
-        // Close verification dialog
-        if (mounted) {
-          _showVerificationDialog = false;
-          verificationCodeController.clear();
-          setState(() {});
-        }
-
-        // Complete the login process
-        if (_pendingEmail != null && _pendingPassword != null) {
-          await _completeLogin(_pendingEmail!, _pendingPassword!);
-        }
-      } on FirebaseAuthException catch (e) {
-        String errorMessage = 'An error occurred';
-        if (e.code == 'email-already-in-use') {
-          errorMessage = 'This email is already registered in Firebase Auth. Please contact administrator.';
-        } else if (e.code == 'weak-password') {
-          errorMessage = 'Password is too weak.';
-        } else if (e.code == 'invalid-email') {
-          errorMessage = 'Invalid email address.';
-        }
-        setState(() {
-          verificationError = errorMessage;
-        });
-      }
-    } catch (e) {
-      if (mounted) {
-        setState(() {
-          verificationError = "Error: ${e.toString()}";
-        });
-      }
-    }
-  }
+  
 
   @override
   Widget build(BuildContext context) {
@@ -593,96 +498,7 @@ class _LoginPageState extends State<LoginPage> {
             ),
           ),
           
-          // Verification Dialog Overlay
-          if (_showVerificationDialog)
-            Container(
-              color: Colors.black54,
-              child: Center(
-                child: Container(
-                  margin: const EdgeInsets.all(32),
-                  padding: const EdgeInsets.all(24),
-                  decoration: BoxDecoration(
-                    color: Colors.white,
-                    borderRadius: BorderRadius.circular(12),
-                    boxShadow: const [
-                      BoxShadow(
-                        color: Colors.black26,
-                        blurRadius: 8,
-                        spreadRadius: 2,
-                      ),
-                    ],
-                  ),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Icon(
-                        Icons.verified_user,
-                        color: Colors.blue,
-                        size: 48,
-                      ),
-                      const SizedBox(height: 16),
-                      Text(
-                        'Account Verification Required',
-                        style: TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.bold,
-                        ),
-                        textAlign: TextAlign.center,
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        'Please enter the verification code provided by your administrator.',
-                        style: TextStyle(
-                          fontSize: 14,
-                          color: Colors.grey.shade600,
-                        ),
-                        textAlign: TextAlign.center,
-                      ),
-                      const SizedBox(height: 24),
-                      TextField(
-                        controller: verificationCodeController,
-                        decoration: InputDecoration(
-                          labelText: 'Verification Code',
-                          errorText: verificationError,
-                          border: const OutlineInputBorder(),
-                          hintText: 'Enter 6-digit code',
-                        ),
-                        keyboardType: TextInputType.number,
-                        textInputAction: TextInputAction.done,
-                        onSubmitted: (_) => _verifyCode(),
-                      ),
-                      const SizedBox(height: 24),
-                      Row(
-                        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                        children: [
-                          TextButton(
-                            onPressed: () {
-                              _showVerificationDialog = false;
-                              verificationCodeController.clear();
-                              _pendingEmail = null;
-                              _pendingPassword = null;
-                              setState(() {});
-                            },
-                            child: Text(
-                              'Cancel',
-                              style: TextStyle(color: Colors.grey.shade600),
-                            ),
-                          ),
-                          ElevatedButton(
-                            onPressed: _verifyCode,
-                            style: ElevatedButton.styleFrom(
-                              backgroundColor: const Color.fromARGB(255, 0, 48, 96),
-                              foregroundColor: Colors.white,
-                            ),
-                            child: Text('Verify'),
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
+          
         ],
       ),
     );

@@ -1,7 +1,12 @@
 import 'package:flutter/material.dart';
+// ignore_for_file: unused_field, unused_element
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_storage/firebase_storage.dart';
+import 'dart:html' as html;
+import 'dart:convert';
 import 'package:intl/intl.dart';
 import '../widget/notificationWidget.dart';
+import 'admin_voice_messages_page.dart';
 import 'admin_notifications_page.dart';
 import 'admin_ticket_page.dart';
 import 'package:firebase/widget/RightSideCalendarWidget.dart';
@@ -46,6 +51,194 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
     _loadRecentTickets();
     _postKeys = List.generate(_announcements.length, (index) => GlobalKey());
     _fetchAdminUsername();
+  }
+
+  Future<void> _markSosViewed(String docId) async {
+    final adminId = FirebaseAuth.instance.currentUser?.email ?? adminUsername ?? 'unknown_admin';
+    try {
+      await FirebaseFirestore.instance.collection('sos_alerts').doc(docId).update({
+        'viewedBy': FieldValue.arrayUnion([adminId])
+      });
+    } catch (e) {
+      // ignore errors - best effort
+    }
+  }
+  // Fetch the latest file Reference from Firebase Storage path 'emergency_locations'
+  Future<Reference?> _fetchLatestStorageReference() async {
+    try {
+      final storage = FirebaseStorage.instance;
+      final result = await storage.ref('emergency_locations').listAll();
+      final items = result.items;
+      if (items.isEmpty) return null;
+
+      final List<MapEntry<Reference, DateTime?>> filesWithDate = await Future.wait(
+        items.map((ref) async {
+          try {
+            final meta = await ref.getMetadata();
+            return MapEntry(ref, meta.updated ?? meta.timeCreated);
+          } catch (e) {
+            return MapEntry(ref, null);
+          }
+        }),
+      );
+
+      filesWithDate.sort((a, b) {
+        final aDate = a.value;
+        final bDate = b.value;
+        if (aDate == null && bDate == null) return 0;
+        if (aDate == null) return 1;
+        if (bDate == null) return -1;
+        return bDate.compareTo(aDate);
+      });
+
+      return filesWithDate.first.key;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  Future<Map<String, dynamic>?> _fetchJsonFromUrl(String url) async {
+    try {
+      final response = await html.HttpRequest.request(url);
+      return jsonDecode(response.responseText!);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  // Clean a storage filename for display: remove extension, strip numeric sequences, and replace underscores with spaces
+  String _cleanFileName(String fileName) {
+    // Remove extension like .json
+    String name = fileName.replaceAll(RegExp(r"\.[^\.]+"), '');
+    // Replace underscores, dashes, dots with spaces
+    name = name.replaceAll(RegExp(r'[_\-\.]'), ' ');
+    // Remove standalone numeric sequences
+    name = name.replaceAll(RegExp(r"\b\d+\b"), '');
+    // Collapse multiple spaces and trim
+    name = name.replaceAll(RegExp(r'\s+'), ' ').trim();
+    return name.isEmpty ? fileName : name;
+  }
+
+  Widget _buildSosBanner() {
+    final adminId = FirebaseAuth.instance.currentUser?.email ?? adminUsername ?? 'unknown_admin';
+
+    // Poll storage every 5 seconds for newest file
+    final Stream<Reference?> storageStream = Stream.periodic(const Duration(seconds: 5)).asyncMap((_) => _fetchLatestStorageReference()).asBroadcastStream();
+
+    return StreamBuilder<Reference?>(
+      stream: storageStream,
+      builder: (context, storageSnapshot) {
+        if (!storageSnapshot.hasData || storageSnapshot.data == null) return const SizedBox.shrink();
+        final ref = storageSnapshot.data!;
+        final fileName = ref.name;
+
+        // Listen to Firestore doc that tracks views for this storage file
+        final docStream = FirebaseFirestore.instance.collection('sos_views').doc(fileName).snapshots();
+
+        return StreamBuilder<DocumentSnapshot>(
+          stream: docStream,
+          builder: (context, viewSnapshot) {
+            final docExists = viewSnapshot.hasData && viewSnapshot.data!.exists;
+            final Map<String, dynamic>? viewData = docExists ? (viewSnapshot.data!.data() as Map<String, dynamic>?) : null;
+            final viewedBy = viewData != null ? List<String>.from((viewData['viewedBy'] ?? []) as List<dynamic>) : <String>[];
+            final seenByMe = viewedBy.contains(adminId);
+
+            return FutureBuilder<String>(
+              future: ref.getDownloadURL(),
+              builder: (context, urlSnap) {
+                String locationText = _cleanFileName(fileName);
+                String timeText = '';
+                if (urlSnap.hasData) {
+                  // attempt to parse JSON for nicer display
+                  // ignore errors
+                  _fetchJsonFromUrl(urlSnap.data!).then((json) {
+                    // no setState here; we only use parsed json synchronously below when available
+                  });
+                }
+
+                // use metadata timestamp if available
+                return FutureBuilder<FullMetadata?>(
+                  future: ref.getMetadata(),
+                  builder: (context, metaSnap) {
+                    if (metaSnap.hasData) {
+                      final ts = metaSnap.data!.updated ?? metaSnap.data!.timeCreated;
+                      if (ts != null) {
+                        try {
+                          timeText = DateFormat('MMMM dd, yyyy hh:mm a').format(ts);
+                        } catch (_) {}
+                      }
+                    }
+
+                    return Container(
+                      width: double.infinity,
+                      margin: const EdgeInsets.only(bottom: 12),
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                      decoration: BoxDecoration(
+                        color: Colors.red.shade50,
+                        border: Border.all(color: Colors.red.shade200),
+                        borderRadius: BorderRadius.circular(8),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.warning_amber_rounded, color: Colors.red),
+                          const SizedBox(width: 10),
+                          Expanded(
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                                Text('SOS ALERT', style: TextStyle(fontWeight: FontWeight.bold, color: Colors.red.shade700)),
+                                const SizedBox(height: 4),
+                                Text(locationText, style: const TextStyle(fontSize: 14)),
+                                if (timeText.isNotEmpty) ...[
+                                  const SizedBox(height: 4),
+                                  Text(timeText, style: const TextStyle(fontSize: 12, color: Colors.black54)),
+                                ],
+                              ],
+                            ),
+                          ),
+                          const SizedBox(width: 8),
+                          ElevatedButton(
+                            style: ElevatedButton.styleFrom(backgroundColor: Colors.red.shade700),
+                            onPressed: () async {
+                              // mark this SOS as viewed for this admin then open the specific emergency
+                              try {
+                                await FirebaseFirestore.instance.collection('sos_views').doc(fileName).set({
+                                  'viewedBy': FieldValue.arrayUnion([adminId]),
+                                  'timestamp': FieldValue.serverTimestamp(),
+                                }, SetOptions(merge: true));
+                              } catch (e) {}
+                              if (context.mounted) {
+                                Navigator.of(context).push(MaterialPageRoute(builder: (_) => AdminVoiceMessagesPage(initialFileName: fileName)));
+                              }
+                            },
+                            child: const Text('View'),
+                          ),
+                          const SizedBox(width: 8),
+                          IconButton(
+                            tooltip: seenByMe ? 'Seen' : 'Mark as seen for me',
+                            onPressed: seenByMe
+                                ? null
+                                : () async {
+                                    try {
+                                      await FirebaseFirestore.instance.collection('sos_views').doc(fileName).set({
+                                        'viewedBy': FieldValue.arrayUnion([adminId]),
+                                        'timestamp': FieldValue.serverTimestamp(),
+                                      }, SetOptions(merge: true));
+                                    } catch (e) {}
+                                  },
+                            icon: Icon(seenByMe ? Icons.check_circle : Icons.visibility, color: seenByMe ? Colors.green : Colors.black54),
+                          ),
+                        ],
+                      ),
+                    );
+                  },
+                );
+              },
+            );
+          },
+        );
+      },
+    );
   }
 
   @override
@@ -287,6 +480,8 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
       body: ListView(
         padding: EdgeInsets.all(screenWidth >= 768 ? 16.0 : 8.0),
         children: [
+          // SOS banner (shows latest SOS; per-admin view tracked in 'sos_alerts' collection)
+          _buildSosBanner(),
           isMobile
             ? Container(
                 decoration: BoxDecoration(

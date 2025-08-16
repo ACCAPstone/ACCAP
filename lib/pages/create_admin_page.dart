@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/services.dart';
+import '../firebase_options.dart';
 
 class CreateAdminPage extends StatefulWidget {
   const CreateAdminPage({super.key});
@@ -22,7 +23,7 @@ class _CreateAdminPageState extends State<CreateAdminPage> {
   bool _checkingRole = true;
   final FirebaseAuth _auth = FirebaseAuth.instance;
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  final FirebaseAuth _secondaryAuth = FirebaseAuth.instanceFor(app: Firebase.app());
+  FirebaseApp? _secondaryApp;
   int entriesPerPage = 10;
   int currentPage = 0;
 
@@ -75,6 +76,7 @@ class _CreateAdminPageState extends State<CreateAdminPage> {
 
 
   Future<void> _createAdmin({required String name}) async {
+    if (_isLoading) return; // prevent double submit
     if (_formKey.currentState!.validate()) {
       _formKey.currentState!.save();
       setState(() {
@@ -82,36 +84,54 @@ class _CreateAdminPageState extends State<CreateAdminPage> {
       });
 
       try {
-        // Generate a simple 6-digit verification code
-        String verificationCode = (100000 + (DateTime.now().millisecondsSinceEpoch % 900000)).toString();
-        
-        // Create Firestore document first with verification code
+        print('Creating Firebase Auth user for: $_email');
+        // Initialize a secondary Firebase app so current super admin session is not affected
+        try {
+          _secondaryApp = Firebase.app('accapSecondary');
+        } catch (_) {
+          _secondaryApp = await Firebase.initializeApp(
+            name: 'accapSecondary',
+            options: DefaultFirebaseOptions.currentPlatform,
+          );
+        }
+
+        final FirebaseAuth secondaryAuth = FirebaseAuth.instanceFor(app: _secondaryApp!);
+
+        // Create the auth user with provided password
+        final UserCredential created = await secondaryAuth.createUserWithEmailAndPassword(
+          email: _email,
+          password: _password,
+        );
+
+        // Send email verification
+        if (created.user != null) {
+          await created.user!.sendEmailVerification();
+        }
+
+        // Sign out from secondary auth to avoid impacting current admin session
+        await secondaryAuth.signOut();
+
+        // Now create Firestore document
         print('Creating Firestore document for: $_email');
-        bool isSuperAdmin = _selectedRole == 'admin' && _isSuperAdmin;
-        
         Map<String, dynamic> adminData = {
           'email': _email,
           'username': _username,
           'name': name,
           'role': _selectedRole,
-          'superAdmin': false, // Regular admins are not super admin
+          'superAdmin': false,
           'createdAt': FieldValue.serverTimestamp(),
-          'lastLogin': FieldValue.serverTimestamp(),
+          'lastLogin': null,
           'isOnline': false,
           'emailVerified': false,
           'verificationDate': null,
-          'verificationCode': verificationCode,
-          'isLegacyAccount': false, // New accounts are not legacy
+          'isLegacyAccount': false,
         };
-        
-        print('Admin data to save: $adminData');
-        
-        // Create Firestore document
+
         DocumentReference docRef = _firestore.collection('admins').doc(_email);
         await docRef.set(adminData);
         print('Firestore document created successfully');
-        
-        // Show success message with verification code
+
+        // Notify success and that a verification email was sent
         if (context.mounted) {
           showDialog(
             context: context,
@@ -130,13 +150,13 @@ class _CreateAdminPageState extends State<CreateAdminPage> {
                     ),
                   ],
                 ),
-                content: Container(
+                content: SizedBox(
                   width: 400,
                   child: Column(
                     mainAxisSize: MainAxisSize.min,
                     children: [
                       Icon(
-                        Icons.check_circle,
+                        Icons.mark_email_read,
                         color: Colors.green,
                         size: 64,
                       ),
@@ -146,33 +166,10 @@ class _CreateAdminPageState extends State<CreateAdminPage> {
                         style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
                         textAlign: TextAlign.center,
                       ),
-                      SizedBox(height: 16),
+                      SizedBox(height: 12),
                       Text(
-                        'Verification Code:',
-                        style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold),
-                      ),
-                      SizedBox(height: 8),
-                      Container(
-                        padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-                        decoration: BoxDecoration(
-                          color: Colors.blue.shade50,
-                          border: Border.all(color: Colors.blue.shade200),
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        child: Text(
-                          verificationCode,
-                          style: TextStyle(
-                            fontSize: 24,
-                            fontWeight: FontWeight.bold,
-                            color: Colors.blue.shade700,
-                            letterSpacing: 2,
-                          ),
-                        ),
-                      ),
-                      SizedBox(height: 16),
-                      Text(
-                        'Please provide this verification code to the user. They will need to enter this code during their first login to create their Firebase Auth account and verify their account.',
-                        style: TextStyle(fontSize: 14, color: Colors.grey.shade600),
+                        'A verification email has been sent to $_email. The user must verify their email before they can sign in.',
+                        style: TextStyle(fontSize: 14, color: Colors.grey.shade700),
                         textAlign: TextAlign.center,
                       ),
                     ],
@@ -182,7 +179,7 @@ class _CreateAdminPageState extends State<CreateAdminPage> {
                   ElevatedButton(
                     onPressed: () {
                       Navigator.of(context).pop();
-                      Navigator.of(context).pop(); // Close create admin dialog
+                      Navigator.of(context).pop();
                     },
                     style: ElevatedButton.styleFrom(
                       backgroundColor: const Color.fromARGB(255, 0, 48, 96),
@@ -200,7 +197,7 @@ class _CreateAdminPageState extends State<CreateAdminPage> {
         print('Firebase Exception: ${e.code} - ${e.message}');
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text('Firestore error: ${e.message}'),
+            content: Text('Firebase error: ${e.message}'),
             backgroundColor: Colors.red,
           ),
         );
@@ -295,7 +292,7 @@ class _CreateAdminPageState extends State<CreateAdminPage> {
                   Text('Create Admin'),
                   IconButton(
                     icon: Icon(Icons.close),
-                    onPressed: () => Navigator.of(context).pop(),
+                    onPressed: _isLoading ? null : () => Navigator.of(context).pop(),
                   ),
                 ],
               ),
@@ -303,12 +300,15 @@ class _CreateAdminPageState extends State<CreateAdminPage> {
                 width: 400,
                 constraints: BoxConstraints(maxHeight: 500),
                 child: SingleChildScrollView(
-                  child: Form(
+                  child: AbsorbPointer(
+                    absorbing: _isLoading,
+                    child: Form(
                     key: _formKey,
                     child: Column(
                       mainAxisSize: MainAxisSize.min,
                       children: [
                         TextFormField(
+                            enabled: !_isLoading,
                           decoration: InputDecoration(labelText: 'Username'),
                           textInputAction: TextInputAction.next,
                           validator: (value) =>
@@ -317,6 +317,7 @@ class _CreateAdminPageState extends State<CreateAdminPage> {
                         ),
                         SizedBox(height: 12),
                         TextFormField(
+                            enabled: !_isLoading,
                           decoration: InputDecoration(labelText: 'Name'),
                           textInputAction: TextInputAction.next,
                           validator: (value) =>
@@ -325,6 +326,7 @@ class _CreateAdminPageState extends State<CreateAdminPage> {
                         ),
                         SizedBox(height: 12),
                         TextFormField(
+                            enabled: !_isLoading,
                           decoration: InputDecoration(labelText: 'Email'),
                           textInputAction: TextInputAction.next,
                           validator: (value) => value == null || !value.contains('@')
@@ -342,11 +344,13 @@ class _CreateAdminPageState extends State<CreateAdminPage> {
                               child: Text(role['label']!),
                             );
                           }).toList(),
-                          onChanged: (value) {
-                            setState(() {
-                              _selectedRole = value!;
-                            });
-                          },
+                            onChanged: _isLoading
+                                ? null
+                                : (value) {
+                                    setState(() {
+                                      _selectedRole = value!;
+                                    });
+                                  },
                           validator: (value) => value == null ? 'Please select a role' : null,
                         ),
                         SizedBox(height: 12),
@@ -367,7 +371,8 @@ class _CreateAdminPageState extends State<CreateAdminPage> {
                             ),
                           ),
                           onFieldSubmitted: (_) async {
-                            if (_formKey.currentState!.validate()) {
+                              if (_isLoading) return;
+                              if (_formKey.currentState!.validate()) {
                               _formKey.currentState!.save();
                               await _createAdmin(name: name);
                             }
@@ -379,28 +384,30 @@ class _CreateAdminPageState extends State<CreateAdminPage> {
                           onSaved: (value) => _password = value!,
                         ),
                         SizedBox(height: 24),
-                        _isLoading
-                            ? CircularProgressIndicator()
-                            : ElevatedButton(
-                          onPressed: () async {
-                            if (_formKey.currentState!.validate()) {
-                              _formKey.currentState!.save();
-                              await _createAdmin(name: name);
-                            }
-                          },
-                          style: ElevatedButton.styleFrom(
-                            backgroundColor: const Color.fromARGB(255, 0, 48, 96),
-                            foregroundColor: Colors.white,
-                            shape: RoundedRectangleBorder(
-                              borderRadius: BorderRadius.circular(8),
-                            ),
-                          ),
-                          child: const Text(
-                            'Submit',
-                            style: TextStyle(color: Colors.white),
-                          ),
-                        ),
+                          _isLoading
+                              ? CircularProgressIndicator()
+                              : ElevatedButton(
+                                  onPressed: () async {
+                                    if (_isLoading) return;
+                                    if (_formKey.currentState!.validate()) {
+                                      _formKey.currentState!.save();
+                                      await _createAdmin(name: name);
+                                    }
+                                  },
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: const Color.fromARGB(255, 0, 48, 96),
+                                    foregroundColor: Colors.white,
+                                    shape: RoundedRectangleBorder(
+                                      borderRadius: BorderRadius.circular(8),
+                                    ),
+                                  ),
+                                  child: const Text(
+                                    'Submit',
+                                    style: TextStyle(color: Colors.white),
+                                  ),
+                                ),
                       ],
+                    ),
                     ),
                   ),
                 ),
@@ -416,7 +423,7 @@ class _CreateAdminPageState extends State<CreateAdminPage> {
     TextEditingController usernameController = TextEditingController(text: currentUsername);
     TextEditingController nameController = TextEditingController(text: currentName ?? '');
     TextEditingController emailController = TextEditingController(text: email);
-    TextEditingController currentPasswordController = TextEditingController();
+    // Removed unused controller to satisfy lints
     TextEditingController newPasswordController = TextEditingController();
     FocusNode keyboardFocusNode = FocusNode();
     bool obscureNewPassword = true;
@@ -784,7 +791,7 @@ class _CreateAdminPageState extends State<CreateAdminPage> {
                           Expanded(
                             child: LayoutBuilder(
                               builder: (context, constraints) {
-                                int visibleRows = adminsToShow.length;
+                                // Keep rowsToShow for layout height; visibleRows not needed
                                 int rowsToShow = entriesPerPage;
                                 double rowHeight = constraints.maxHeight / rowsToShow;
 
@@ -1071,7 +1078,7 @@ class _CreateAdminPageState extends State<CreateAdminPage> {
                                                     ),
                                                   if (verificationStatus == 'Pending Verification')
                                                     Text(
-                                                      "Needs verification code",
+                                                      "Awaiting email verification",
                                                       style: TextStyle(fontSize: 10, color: Colors.orange),
                                                     ),
                                                 ],

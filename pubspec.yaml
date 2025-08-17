@@ -71,6 +71,9 @@ dependencies:
   just_audio: ^0.10.2
   flutter_map: ^6.1.0
   latlong2: ^0.9.0
+  fl_chart: ^1.0.0
+  async: 2.12.0
+
 
 dev_dependencies:
   flutter_test:

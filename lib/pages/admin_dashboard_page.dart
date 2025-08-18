@@ -12,7 +12,6 @@ import 'package:firebase/widget/RightSideCalendarWidget.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase/widget/FullCommentDialog.dart';
 import 'package:fl_chart/fl_chart.dart';
-import 'package:async/async.dart';
 
 const kSidebarColor = Color(0xFF0B2E4E);
 const kSidebarIconColor = Color(0xFF4A90A4);

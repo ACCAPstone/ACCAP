@@ -97,12 +97,10 @@ void initState() {
           );
         },
       );
-      if (picked != null) {
-        setState(() {
-          _eventDate = picked;
-        });
-      }
-    }
+      setState(() {
+        _eventDate = picked;
+      });
+        }
   });
 }
 
@@ -407,12 +405,10 @@ Widget build(BuildContext context) {
                         );
                       },
                     );
-                    if (picked != null) {
-                      setState(() {
-                        _eventDate = picked;
-                      });
-                    }
-                  },
+                    setState(() {
+                      _eventDate = picked;
+                    });
+                                    },
                 ),
               ),
 

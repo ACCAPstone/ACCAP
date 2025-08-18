@@ -14,6 +14,11 @@ class AdminVoiceMessagesPage extends StatefulWidget {
   final String? initialFileName;
   const AdminVoiceMessagesPage({super.key, this.initialFileName});
 
+  // Notifier used by other pages to request opening a specific SOS file
+  static final ValueNotifier<String?> openFileNotifier = ValueNotifier(null);
+  // Notifier containing locally-seen SOS filenames so other pages can reflect UI immediately
+  static final ValueNotifier<Set<String>> seenSosNotifier = ValueNotifier(<String>{});
+
   @override
   State<AdminVoiceMessagesPage> createState() => _AdminVoiceMessagesPageState();
 }
@@ -21,6 +26,7 @@ class AdminVoiceMessagesPage extends StatefulWidget {
 class _AdminVoiceMessagesPageState extends State<AdminVoiceMessagesPage> {
   final FirebaseStorage _storage = FirebaseStorage.instance;
   late Future<List<Reference>> _jsonFilesFuture;
+  VoidCallback? _openFileListener;
 
   @override
   void initState() {
@@ -34,6 +40,55 @@ class _AdminVoiceMessagesPageState extends State<AdminVoiceMessagesPage> {
         });
       }
     });
+
+    // Listen to global notifier for programmatic open requests
+    _openFileListener = () {
+      final requested = AdminVoiceMessagesPage.openFileNotifier.value;
+      if (requested != null) {
+        // When notifier is set, attempt to open that file after fetching list
+        _jsonFilesFuture.then((refs) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _openRequestedFile(requested, refs);
+          });
+        });
+      }
+    };
+    AdminVoiceMessagesPage.openFileNotifier.addListener(_openFileListener!);
+
+    // In case the notifier was set before this page initialized, handle it now
+    if (AdminVoiceMessagesPage.openFileNotifier.value != null) {
+      final preRequested = AdminVoiceMessagesPage.openFileNotifier.value!;
+      _jsonFilesFuture.then((refs) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          _openRequestedFile(preRequested, refs);
+        });
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    if (_openFileListener != null) {
+      AdminVoiceMessagesPage.openFileNotifier.removeListener(_openFileListener!);
+    }
+    super.dispose();
+  }
+
+  Future<void> _openRequestedFile(String fileName, List<Reference> refs) async {
+    try {
+      Reference? match;
+      for (final r in refs) {
+        if (r.name == fileName) {
+          match = r;
+          break;
+        }
+      }
+      if (match != null && mounted) {
+        await _openEmergencyDialog(match);
+      }
+    } catch (_) {}
+    // clear notifier so subsequent uses can trigger again
+    AdminVoiceMessagesPage.openFileNotifier.value = null;
   }
 
   Future<void> _openInitialIfPresent(BuildContext context, List<Reference> refs) async {
@@ -377,33 +432,43 @@ class _AdminVoiceMessagesPageState extends State<AdminVoiceMessagesPage> {
                                                 ],
                                               );
                                             } else {
-                                              return Row(
-                                                children: [
-                                                  const Icon(Icons.location_on, color: Color(0xFF0F3060)),
-                                                  const SizedBox(width: 12),
-                                                  Expanded(
-                                                    child: Column(
-                                                      crossAxisAlignment: CrossAxisAlignment.start,
-                                                      children: [
-                                                        Text(address.isNotEmpty ? address : 'Unknown location', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
-                                                        if (jsonSnapshot.hasData && jsonSnapshot.data != null && jsonSnapshot.data!['emergencyType'] != null && (jsonSnapshot.data!['emergencyType'] as String).trim().isNotEmpty)
-                                                          Padding(padding: const EdgeInsets.only(top: 2.0, bottom: 2.0), child: Text("Emergency: ${jsonSnapshot.data!['emergencyType']}", style: const TextStyle(fontSize: 14, color: Colors.red, fontWeight: FontWeight.bold))),
-                                                        if (jsonSnapshot.hasData && jsonSnapshot.data != null && jsonSnapshot.data!['contactNumber'] != null && (jsonSnapshot.data!['contactNumber'] as String).trim().isNotEmpty)
-                                                          Padding(padding: const EdgeInsets.only(top: 2.0, bottom: 2.0), child: Text("Contact: ${jsonSnapshot.data!['contactNumber']}", style: const TextStyle(fontSize: 14, color: Colors.blue))),
-                                                        if (jsonSnapshot.hasData && jsonSnapshot.data != null && jsonSnapshot.data!['disabilityType'] != null && (jsonSnapshot.data!['disabilityType'] as String).trim().isNotEmpty)
-                                                          Padding(padding: const EdgeInsets.only(top: 2.0, bottom: 2.0), child: Text("Disability: ${jsonSnapshot.data!['disabilityType']}", style: const TextStyle(fontSize: 14, color: Colors.purple))),
-                                                        if (jsonSnapshot.hasData && jsonSnapshot.data != null && jsonSnapshot.data!['description'] != null && (jsonSnapshot.data!['description'] as String).trim().isNotEmpty)
-                                                          Padding(padding: const EdgeInsets.only(top: 2.0, bottom: 2.0), child: Text("Description: ${jsonSnapshot.data!['description']}", style: const TextStyle(fontSize: 14, color: Colors.green))),
-                                                        const SizedBox(height: 4),
-                                                        Text(userName, style: const TextStyle(color: Colors.grey, fontSize: 14)),
-                                                        const SizedBox(height: 4),
-                                                        Text(_formatDate(dateTime), style: const TextStyle(color: Colors.grey, fontSize: 13)),
-                                                      ],
-                                                    ),
-                                                  ),
-                                                  const Icon(Icons.visibility),
-                                                ],
-                                              );
+                                                                  return Row(
+                                                                    children: [
+                                                                      const Icon(Icons.location_on, color: Color(0xFF0F3060)),
+                                                                      const SizedBox(width: 12),
+                                                                      Expanded(
+                                                                        child: Column(
+                                                                          crossAxisAlignment: CrossAxisAlignment.start,
+                                                                          children: [
+                                                                            Text(address.isNotEmpty ? address : 'Unknown location', style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16)),
+                                                                            if (jsonSnapshot.hasData && jsonSnapshot.data != null && jsonSnapshot.data!['emergencyType'] != null && (jsonSnapshot.data!['emergencyType'] as String).trim().isNotEmpty)
+                                                                              Padding(padding: const EdgeInsets.only(top: 2.0, bottom: 2.0), child: Text("Emergency: ${jsonSnapshot.data!['emergencyType']}", style: const TextStyle(fontSize: 14, color: Colors.red, fontWeight: FontWeight.bold))),
+                                                                            if (jsonSnapshot.hasData && jsonSnapshot.data != null && jsonSnapshot.data!['contactNumber'] != null && (jsonSnapshot.data!['contactNumber'] as String).trim().isNotEmpty)
+                                                                              Padding(padding: const EdgeInsets.only(top: 2.0, bottom: 2.0), child: Text("Contact: ${jsonSnapshot.data!['contactNumber']}", style: const TextStyle(fontSize: 14, color: Colors.blue))),
+                                                                            if (jsonSnapshot.hasData && jsonSnapshot.data != null && jsonSnapshot.data!['disabilityType'] != null && (jsonSnapshot.data!['disabilityType'] as String).trim().isNotEmpty)
+                                                                              Padding(padding: const EdgeInsets.only(top: 2.0, bottom: 2.0), child: Text("Disability: ${jsonSnapshot.data!['disabilityType']}", style: const TextStyle(fontSize: 14, color: Colors.purple))),
+                                                                            if (jsonSnapshot.hasData && jsonSnapshot.data != null && jsonSnapshot.data!['description'] != null && (jsonSnapshot.data!['description'] as String).trim().isNotEmpty)
+                                                                              Padding(padding: const EdgeInsets.only(top: 2.0, bottom: 2.0), child: Text("Description: ${jsonSnapshot.data!['description']}", style: const TextStyle(fontSize: 14, color: Colors.green))),
+                                                                            const SizedBox(height: 4),
+                                                                            Text(userName, style: const TextStyle(color: Colors.grey, fontSize: 14)),
+                                                                            const SizedBox(height: 4),
+                                                                            Text(_formatDate(dateTime), style: const TextStyle(color: Colors.grey, fontSize: 13)),
+                                                                          ],
+                                                                        ),
+                                                                      ),
+                                                                      // show seen state using the shared notifier so UI updates immediately when another page marks viewed
+                                                                      ValueListenableBuilder<Set<String>>(
+                                                                        valueListenable: AdminVoiceMessagesPage.seenSosNotifier,
+                                                                        builder: (context, seenSet, _) {
+                                                                          final locallySeen = seenSet.contains(fileName);
+                                                                          return Icon(
+                                                                            locallySeen ? Icons.check_circle : Icons.visibility,
+                                                                            color: locallySeen ? Colors.green : Colors.black54,
+                                                                          );
+                                                                        },
+                                                                      ),
+                                                                    ],
+                                                                  );
                                             }
                                           },
                                         ),

@@ -1123,8 +1123,8 @@ Widget build(BuildContext context) {
     return ListTile(
       leading: Icon(
         icon,
-        color: Colors.black,
-        size: isSmallScreen ? 18 : 24,
+        color: Color.fromARGB(255, 46, 134, 171),
+        size: isSmallScreen ? 22 : 28,
       ),
       title: Text(
         label,

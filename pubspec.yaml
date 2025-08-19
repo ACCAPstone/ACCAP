@@ -75,6 +75,7 @@ dependencies:
   async: 2.12.0
 
 
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -116,6 +117,12 @@ fonts:
       - family: NotoSans
         fonts:
         - asset: fonts/NotoSans-Regular.ttf
+
+      - family: SourceSansPro
+        fonts:
+        - asset: assets/fonts/SourceSansPro-Regular.ttf
+        - asset: assets/fonts/SourceSansPro-Bold.ttf
+        weight: 700
 
   # The following line ensures that the Material Icons font is
   # included with your application, so that you can use the icons in

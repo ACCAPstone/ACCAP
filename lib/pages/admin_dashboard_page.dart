@@ -12,7 +12,6 @@ import 'package:firebase/widget/RightSideCalendarWidget.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase/widget/FullCommentDialog.dart';
 import 'package:fl_chart/fl_chart.dart';
-import 'package:async/async.dart';
 
 const kSidebarColor = Color(0xFF0B2E4E);
 const kSidebarIconColor = Color(0xFF4A90A4);
@@ -59,13 +58,15 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
   String? adminUsername;
   bool showUserList = false;
   List<String> selectedUserCategories = [];
+  // locally track SOS files we've just marked as seen so UI updates immediately
+  final Set<String> _locallySeenSos = {};
   String _selectedChartRange = 'Last 7 days';
   String? _highlightedLine; // 'transportation', 'medication', 'wheelchair'
   
   // Add request chart data
-  List<FlSpot> _transportationData = [];
-  List<FlSpot> _medicationData = [];
-  List<FlSpot> _wheelchairData = [];
+  final List<FlSpot> _transportationData = [];
+  final List<FlSpot> _medicationData = [];
+  final List<FlSpot> _wheelchairData = [];
   int _transportationCount = 0;
   int _medicationCount = 0;
   int _wheelchairCount = 0;
@@ -97,12 +98,33 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
         adminUsername ??
         'unknown_admin';
     try {
+      // Record view on the original sos_alerts doc (best-effort)
       await FirebaseFirestore.instance
           .collection('sos_alerts')
           .doc(docId)
           .update({
         'viewedBy': FieldValue.arrayUnion([adminId])
       });
+
+      // Also record in a per-file helper collection so banner visibility
+      // can be tracked independently without relying on storage metadata.
+      await FirebaseFirestore.instance
+          .collection('sos_views')
+          .doc(docId)
+          .set({
+        'viewedBy': FieldValue.arrayUnion([adminId]),
+        'timestamp': FieldValue.serverTimestamp(),
+      }, SetOptions(merge: true));
+      // mark locally so the dashboard banner hides immediately
+      if (mounted) {
+        setState(() {
+          _locallySeenSos.add(docId);
+          // also notify the Emergency Alerts page so its list updates immediately
+          final current = AdminVoiceMessagesPage.seenSosNotifier.value;
+          final updated = Set<String>.from(current)..add(docId);
+          AdminVoiceMessagesPage.seenSosNotifier.value = updated;
+        });
+      }
     } catch (e) {
       // ignore errors - best effort
     }
@@ -179,8 +201,9 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
     return StreamBuilder<Reference?>(
       stream: storageStream,
       builder: (context, storageSnapshot) {
-        if (!storageSnapshot.hasData || storageSnapshot.data == null)
+        if (!storageSnapshot.hasData || storageSnapshot.data == null) {
           return const SizedBox.shrink();
+        }
         final ref = storageSnapshot.data!;
         final fileName = ref.name;
 
@@ -201,7 +224,9 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                 ? List<String>.from(
                 (viewData['viewedBy'] ?? []) as List<dynamic>)
                 : <String>[];
-            final seenByMe = viewedBy.contains(adminId);
+            final seenByMe = viewedBy.contains(adminId) || _locallySeenSos.contains(fileName);
+            // If the current admin already viewed this SOS (or we just marked it), hide the banner
+            if (seenByMe) return const SizedBox.shrink();
 
             return FutureBuilder<String>(
               future: ref.getDownloadURL(),
@@ -270,22 +295,25 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                           ElevatedButton(
                             style: ElevatedButton.styleFrom(
                                 backgroundColor: Colors.red.shade700),
-                            onPressed: () async {
-                              // mark this SOS as viewed for this admin then open the specific emergency
-                              try {
-                                await FirebaseFirestore.instance
-                                    .collection('sos_views')
-                                    .doc(fileName)
-                                    .set({
-                                  'viewedBy': FieldValue.arrayUnion([adminId]),
-                                  'timestamp': FieldValue.serverTimestamp(),
-                                }, SetOptions(merge: true));
-                              } catch (e) {}
-                              if (context.mounted) {
-                                Navigator.of(context).push(MaterialPageRoute(
-                                    builder: (_) => AdminVoiceMessagesPage(
-                                        initialFileName: fileName)));
+                            onPressed: () {
+                              // optimistic: hide banner immediately in dashboard
+                              if (mounted) {
+                                setState(() {
+                                  _locallySeenSos.add(fileName);
+                                });
                               }
+
+                              // notify Emergency Alerts page immediately so its list icon updates
+                              final currentSeen = AdminVoiceMessagesPage.seenSosNotifier.value;
+                              final updatedSeen = Set<String>.from(currentSeen)..add(fileName);
+                              AdminVoiceMessagesPage.seenSosNotifier.value = updatedSeen;
+
+                              // persist the view in Firestore in background (best-effort)
+                              _markSosViewed(fileName);
+
+                              // switch main index to Emergency Alerts and request it open the file
+                              widget.updateIndex(5);
+                              AdminVoiceMessagesPage.openFileNotifier.value = fileName;
                             },
                             child: const Text('View'),
                           ),
@@ -730,7 +758,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   // Impairment Cards in 2x2 grid
-                  Container(
+                  SizedBox(
                     height: 260, // Increased height for mobile to prevent overflow
                     child: Column(
                       children: [
@@ -796,7 +824,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                     width: double.infinity,
                     child: Column(
                       children: [
-                        Container(
+                        SizedBox(
                           height: 200, // Increased height for total users card to prevent overflow
                           child: _buildTotalUsersBox(_disabilityCounts
                               .values
@@ -902,7 +930,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                     // Left side: 2x2 grid of impairment cards (2/3 width)
                     Expanded(
                       flex: 2,
-                      child: Container(
+                      child: SizedBox(
                         height: 320, // Increased height to fix overflow issue
                         child: Column(
                           children: [
@@ -963,7 +991,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                     // Right side: Total Members card (1/3 width)
                     Expanded(
                       flex: 1,
-                      child: Container(
+                      child: SizedBox(
                         height: 320, // Same height as impairment cards container
                         child: _buildTotalUsersBox(_disabilityCounts
                             .values
@@ -1289,7 +1317,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                         ),
                       ),
                       const SizedBox(height: 16),
-                      Container(
+                      SizedBox(
                         height: 400, // Fixed height for scrollable area
                         child: ListView.builder(
                           itemCount: _recentTickets.length > 5 ? 5 : _recentTickets.length,

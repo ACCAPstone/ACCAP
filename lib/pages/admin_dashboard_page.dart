@@ -70,6 +70,10 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
   int _transportationCount = 0;
   int _medicationCount = 0;
   int _wheelchairCount = 0;
+  // Guard to prevent multiple dialogs opening from rapid taps
+  bool _isOpeningRequestDialog = false;
+  // X-axis labels corresponding to request chart data indices
+  List<String> _timeLabels = [];
   
   // Add donut chart data
   int _totalRequests = 0;
@@ -534,20 +538,77 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
         startTime = now.subtract(const Duration(days: 7));
     }
 
-    // Load data from Firebase collections
-    await _loadCollectionData('service_requests', startTime, now, _transportationData, (count) {
-      _transportationCount = count;
-    });
-    
-    await _loadCollectionData('medication_requests', startTime, now, _medicationData, (count) {
-      _medicationCount = count;
-    });
-    
-    await _loadCollectionData('wheelchair_requests', startTime, now, _wheelchairData, (count) {
-      _wheelchairCount = count;
-    });
+    // Fetch grouped counts per collection
+    final Map<DateTime, int> transportationGroups =
+        await _groupCollectionData('service_requests', startTime, now);
+    final Map<DateTime, int> medicationGroups =
+        await _groupCollectionData('medication_requests', startTime, now);
+    final Map<DateTime, int> wheelchairGroups =
+        await _groupCollectionData('wheelchair_requests', startTime, now);
+
+    // Update total counts
+    _transportationCount =
+        transportationGroups.values.fold<int>(0, (a, b) => a + b);
+    _medicationCount = medicationGroups.values.fold<int>(0, (a, b) => a + b);
+    _wheelchairCount = wheelchairGroups.values.fold<int>(0, (a, b) => a + b);
+
+    // Build unified, sorted time axis
+    final Set<DateTime> allKeys = <DateTime>{}
+      ..addAll(transportationGroups.keys)
+      ..addAll(medicationGroups.keys)
+      ..addAll(wheelchairGroups.keys);
+    final List<DateTime> sortedKeys = allKeys.toList()..sort();
+
+    // Prepare time labels
+    _timeLabels = sortedKeys
+        .map((dt) => _selectedChartRange == 'Last hour'
+            ? DateFormat('HH:mm').format(dt)
+            : DateFormat('MMM dd').format(dt))
+        .toList();
+
+    // Rebuild chart spots aligned to the unified axis
+    _transportationData.clear();
+    _medicationData.clear();
+    _wheelchairData.clear();
+
+    for (int i = 0; i < sortedKeys.length; i++) {
+      final DateTime bucket = sortedKeys[i];
+      _transportationData
+          .add(FlSpot(i.toDouble(), (transportationGroups[bucket] ?? 0).toDouble()));
+      _medicationData
+          .add(FlSpot(i.toDouble(), (medicationGroups[bucket] ?? 0).toDouble()));
+      _wheelchairData
+          .add(FlSpot(i.toDouble(), (wheelchairGroups[bucket] ?? 0).toDouble()));
+    }
 
     setState(() {});
+  }
+
+  // Group requests by minute (Last hour) or by day (7/30 days) and return the bucketed counts
+  Future<Map<DateTime, int>> _groupCollectionData(
+      String collection, DateTime startTime, DateTime endTime) async {
+    final Map<DateTime, int> timeGroups = {};
+    try {
+      final QuerySnapshot snapshot = await FirebaseFirestore.instance
+          .collection(collection)
+          .where('timestamp', isGreaterThanOrEqualTo: Timestamp.fromDate(startTime))
+          .where('timestamp', isLessThanOrEqualTo: Timestamp.fromDate(endTime))
+          .get();
+
+      for (final doc in snapshot.docs) {
+        final data = doc.data() as Map<String, dynamic>;
+        if (data['timestamp'] is Timestamp) {
+          final DateTime ts = (data['timestamp'] as Timestamp).toDate();
+          final DateTime bucket = _selectedChartRange == 'Last hour'
+              ? DateTime(ts.year, ts.month, ts.day, ts.hour, ts.minute)
+              : DateTime(ts.year, ts.month, ts.day);
+          timeGroups[bucket] = (timeGroups[bucket] ?? 0) + 1;
+        }
+      }
+    } catch (e) {
+      print('Error grouping $collection data: $e');
+    }
+    return timeGroups;
   }
 
   Future<void> _loadCollectionData(String collection, DateTime startTime, DateTime endTime, 
@@ -644,9 +705,10 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
     final screenWidth = MediaQuery.of(context).size.width;
     final isMobile = screenWidth < 900;
     final double leftColWidth =
-    screenWidth >= 1200 ? 320 : (screenWidth >= 768 ? 280 : 260);
+    screenWidth >= 1200 ? 460 : (screenWidth >= 768 ? 420 : 340);
+    // Height will be reused for left calendar and right announcements to keep them aligned
     final double calendarCardHeight =
-    screenWidth >= 1200 ? 500 : (screenWidth >= 768 ? 450 : 400);
+    screenWidth >= 1200 ? 680 : (screenWidth >= 768 ? 640 : 580);
     final double totalUsersBoxHeight = screenWidth >= 768 ? 120 : 100;
     final double rightColHeight =
     screenWidth >= 1200 ? 650 : (screenWidth >= 768 ? 600 : 550);
@@ -833,25 +895,26 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                         const SizedBox(height: 24),
                         SizedBox(
                           height: calendarCardHeight,
-                          child: SingleChildScrollView(
-                            child: Card(
-                              elevation: 2,
-                              color: Colors.white,
-                              shape: RoundedRectangleBorder(
-                                  borderRadius:
-                                  BorderRadius.circular(12)),
-                              margin: EdgeInsets.zero,
-                              child: ConstrainedBox(
-                                constraints: BoxConstraints(
-                                  minWidth:
-                                  screenWidth >= 768 ? 280 : 260,
-                                  maxWidth:
-                                  screenWidth >= 768 ? 340 : 320,
+                          child: Card(
+                            elevation: 2,
+                            color: Colors.white,
+                            shape: RoundedRectangleBorder(
+                                borderRadius:
+                                BorderRadius.circular(12)),
+                            margin: EdgeInsets.zero,
+                            child: ConstrainedBox(
+                              constraints: BoxConstraints(
+                                minWidth: screenWidth >= 768 ? 320 : 300,
+                                maxWidth: screenWidth >= 768 ? 380 : 340,
+                              ),
+                              child: Center(
+                                child: SizedBox(
+                                  width: (screenWidth >= 768 ? 380 : 340) - 80,
+                                  child: RightSideCalendarWidget(
+                                      showRecentPosts: false,
+                                      showNotificationIcon: false,
+                                      scrollablePostsOnSelectedDay: false),
                                 ),
-                                child: RightSideCalendarWidget(
-                                    showRecentPosts: false,
-                                    showNotificationIcon: false,
-                                    scrollablePostsOnSelectedDay: true),
                               ),
                             ),
                           ),
@@ -871,7 +934,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                           crossAxisAlignment: CrossAxisAlignment.start,
                           children: [
                             Text(
-                              "Announcements",
+                              "Recent Announcements",
                               style: TextStyle(
                                   fontSize: screenWidth >= 768 ? 20 : 18,
                                   fontWeight: FontWeight.bold),
@@ -903,14 +966,11 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                                   fontWeight: FontWeight.bold),
                             ),
                             SizedBox(height: 12),
-                            ListView.builder(
-                              shrinkWrap: true,
-                              physics: NeverScrollableScrollPhysics(),
-                              itemCount: _recentTickets.length,
-                              itemBuilder: (context, index) {
-                                final ticket = _recentTickets[index];
-                                return _buildRequestCard(ticket);
-                              },
+                            Column(
+                              children: List.generate(
+                                _recentTickets.length >= 4 ? 4 : _recentTickets.length,
+                                (index) => _buildRequestCard(_recentTickets[index]),
+                              ),
                             ),
                           ],
                         ),
@@ -1317,14 +1377,10 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                         ),
                       ),
                       const SizedBox(height: 16),
-                      SizedBox(
-                        height: 400, // Fixed height for scrollable area
-                        child: ListView.builder(
-                          itemCount: _recentTickets.length > 5 ? 5 : _recentTickets.length,
-                          itemBuilder: (context, index) {
-                            final ticket = _recentTickets[index];
-                            return _buildRequestCard(ticket);
-                          },
+                      Column(
+                        children: List.generate(
+                          _recentTickets.length >= 4 ? 4 : _recentTickets.length,
+                          (index) => _buildRequestCard(_recentTickets[index]),
                         ),
                       ),
                     ],
@@ -1343,39 +1399,41 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                         children: [
                           SizedBox(
                             height: calendarCardHeight,
-                            child: SingleChildScrollView(
-                              controller: _calendarController,
-                              child: Card(
-                                elevation: 2,
-                                color: Colors.white,
-                                shape: RoundedRectangleBorder(
-                                    borderRadius:
-                                    BorderRadius.circular(12)),
-                                margin: EdgeInsets.zero,
-                                child: ConstrainedBox(
-                                  constraints: BoxConstraints(
-                                    minWidth:
-                                    screenWidth >= 768 ? 280 : 260,
-                                    maxWidth:
-                                    screenWidth >= 768 ? 340 : 320,
+                            child: Card(
+                              elevation: 2,
+                              color: Colors.white,
+                              shape: RoundedRectangleBorder(
+                                  borderRadius:
+                                  BorderRadius.circular(12)),
+                              margin: EdgeInsets.zero,
+                              child: ConstrainedBox(
+                                constraints: BoxConstraints(
+                                  minWidth: leftColWidth,
+                                  maxWidth: leftColWidth,
+                                ),
+                                child: Center(
+                                  child: SizedBox(
+                                    width: leftColWidth - 80,
+                                    child: RightSideCalendarWidget(
+                                        showRecentPosts: false,
+                                        showNotificationIcon: false,
+                                        scrollablePostsOnSelectedDay: false),
                                   ),
-                                  child: RightSideCalendarWidget(
-                                      showRecentPosts: false,
-                                      showNotificationIcon: false,
-                                      scrollablePostsOnSelectedDay: true),
                                 ),
                               ),
                             ),
                           ),
+                          const SizedBox(width: 16),
                         ],
                       ),
                     ),
                     // Right columns: Announcements only
+                    SizedBox(width: 16),
                     Expanded(
                       child: Container(
-                        height: rightColHeight,
+                        height: calendarCardHeight,
                         decoration: BoxDecoration(
-                          color: Color(0xFFEAF6FB),
+                          color: Colors.white,
                           borderRadius: BorderRadius.circular(10),
                           boxShadow: [
                             BoxShadow(
@@ -1393,30 +1451,21 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                           CrossAxisAlignment.start,
                           children: [
                             Text(
-                              "Announcements",
+                              "Recent Announcements",
                               style: TextStyle(
                                   fontSize:
                                   screenWidth >= 768 ? 20 : 18,
                                   fontWeight: FontWeight.bold),
                             ),
                             SizedBox(height: 12),
-                            Expanded(
-                              child: Scrollbar(
-                                controller:
-                                _announcementsController,
-                                thumbVisibility: true,
-                                child: ListView.builder(
-                                  controller:
-                                  _announcementsController,
-                                  itemCount: _announcements.length,
-                                  itemBuilder: (context, index) {
-                                    final announcement =
-                                    _announcements[index];
-                                    return _buildAnnouncementCard(
-                                        announcement);
-                                  },
-                                ),
-                              ),
+                            ListView.builder(
+                              shrinkWrap: true,
+                              physics: NeverScrollableScrollPhysics(),
+                              itemCount: _announcements.length > 7 ? 7 : _announcements.length,
+                              itemBuilder: (context, index) {
+                                final announcement = _announcements[index];
+                                return _buildAnnouncementCard(announcement);
+                              },
                             ),
                           ],
                         ),
@@ -1442,43 +1491,69 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
     final labelFontSize = isSmall ? 11.0 : 16.0; // Optimized label font size
     final countFontSize = isSmall ? 13.0 : 20.0; // Optimized count font size
     final cardPadding = isSmall ? 10.0 : 18.0; // Optimized padding
-    final card = InkWell(
-      onTap: () {
-        widget.onImpairmentCardTap([label]);
-      },
-      child: Card(
-        elevation: 1.0,
-        shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(12),
-        ),
-        color: const Color(0xFFEAF6FB),
-        child: Padding(
-          padding: EdgeInsets.all(cardPadding),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(icon, color: Colors.black87, size: iconSize),
-              SizedBox(height: isSmall ? 6 : 12), // Optimized spacing
-              Text(
-                label,
-                style:
-                TextStyle(fontSize: labelFontSize, color: Colors.black54),
-                textAlign: TextAlign.center,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
+    final Color cardColor;
+    if (label == "Visual Impairment" || label == "Visually Impaired") {
+      cardColor = const Color(0xFFE9F8FF);
+    } else if (label == "Hearing Impairment" || label == "Hearing Impaired") {
+      cardColor = const Color(0xFFFFF2FB);
+    } else if (label == "Speech Impairment" || label == "Speech Impaired") {
+      cardColor = const Color(0xFFFAFFE8);
+    } else if (label == "Mobility Impairment" || label == "Mobility Impaired") {
+      cardColor = const Color(0xFFE8FFEB);
+    } else {
+      cardColor = const Color(0xFFEAF6FB);
+    }
+
+    bool hovered = false;
+    final card = StatefulBuilder(
+      builder: (context, setLocalState) {
+        return MouseRegion(
+          cursor: SystemMouseCursors.click,
+          onEnter: (_) => setLocalState(() => hovered = true),
+          onExit: (_) => setLocalState(() => hovered = false),
+          child: GestureDetector(
+            onTap: () {
+              widget.onImpairmentCardTap([label]);
+            },
+            child: AnimatedScale(
+              scale: hovered ? 1.03 : 1.0,
+              duration: const Duration(milliseconds: 120),
+              child: Card(
+                elevation: 1.0,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(12),
+                ),
+                color: cardColor,
+                child: Padding(
+                  padding: EdgeInsets.all(cardPadding),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      Icon(icon, color: Colors.black87, size: iconSize),
+                      SizedBox(height: isSmall ? 6 : 12),
+                      Text(
+                        label,
+                        style: TextStyle(fontSize: labelFontSize, color: Colors.black54),
+                        textAlign: TextAlign.center,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      SizedBox(height: isSmall ? 6 : 12),
+                      Text(
+                        "$count Members",
+                        style: TextStyle(
+                            fontSize: countFontSize,
+                            fontWeight: FontWeight.bold,
+                            color: Colors.black),
+                      ),
+                    ],
+                  ),
+                ),
               ),
-              SizedBox(height: isSmall ? 6 : 12), // Optimized spacing
-              Text(
-                "$count Members",
-                style: TextStyle(
-                    fontSize: countFontSize,
-                    fontWeight: FontWeight.bold,
-                    color: Colors.black),
-              ),
-            ],
+            ),
           ),
-        ),
-      ),
+        );
+      },
     );
     if (useExpanded) {
       return Expanded(child: card);
@@ -1488,16 +1563,26 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
   }
 
   Widget _buildTotalUsersBox(int totalUserCount) {
-    return InkWell(
-      onTap: () {
-        widget.onImpairmentCardTap([]);
-      },
-      child: Container(
+    bool hovered = false;
+    return StatefulBuilder(
+      builder: (context, setLocalState) {
+        return MouseRegion(
+          cursor: SystemMouseCursors.click,
+          onEnter: (_) => setLocalState(() => hovered = true),
+          onExit: (_) => setLocalState(() => hovered = false),
+          child: GestureDetector(
+            onTap: () {
+              widget.onImpairmentCardTap([]);
+            },
+            child: AnimatedScale(
+              scale: hovered ? 1.03 : 1.0,
+              duration: const Duration(milliseconds: 120),
+              child: Container(
         width: double.infinity,
         height: double.infinity, // Fill the container height
         padding: const EdgeInsets.all(24.0), // Increased padding
         decoration: BoxDecoration(
-          color: const Color(0xFFFFF7E6), // Light beige/cream background
+          color: const Color(0xFFEBF4FF), // Updated background for total members
           borderRadius: BorderRadius.circular(12),
           boxShadow: [
             BoxShadow(
@@ -1518,10 +1603,9 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
                 color: Colors.blue.withOpacity(0.1),
                 shape: BoxShape.circle,
               ),
-              child: Icon(
-                Icons.groups,
-                size: 48, // Increased icon size
-                color: Colors.blue.shade700,
+              child: Image.asset(
+                'assets/ACCAP_LOGO.png',
+                height: 90,
               ),
             ),
             const SizedBox(height: 16), // Increased spacing
@@ -1544,7 +1628,11 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
             ),
           ],
         ),
-      ),
+        ),
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -1621,59 +1709,65 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
       padding: const EdgeInsets.symmetric(vertical: 6.0),
       child: GestureDetector(
         onTap: () async {
-          List<String> collections = [
-            "medication_requests",
-            "wheelchair_requests",
-            "service_requests"
-          ];
-          for (String collection in collections) {
-            var querySnapshot = await FirebaseFirestore.instance
-                .collection(collection)
-                .where("requestNumber", isEqualTo: ticket['ticket#'])
-                .limit(1)
-                .get();
+          if (_isOpeningRequestDialog) return; // ignore rapid repeat taps
+          _isOpeningRequestDialog = true;
+          try {
+            final List<String> collections = [
+              "medication_requests",
+              "wheelchair_requests",
+              "service_requests"
+            ];
+            QueryDocumentSnapshot? foundDoc;
+            for (final String collection in collections) {
+              final querySnapshot = await FirebaseFirestore.instance
+                  .collection(collection)
+                  .where("requestNumber", isEqualTo: ticket['ticket#'])
+                  .limit(1)
+                  .get();
+              if (querySnapshot.docs.isNotEmpty) {
+                foundDoc = querySnapshot.docs.first;
+                break;
+              }
+            }
 
-            if (querySnapshot.docs.isNotEmpty) {
-              var ticketDoc = querySnapshot.docs.first;
-              if (context.mounted) {
-                showDialog(
-                  context: context,
-                  builder: (context) => Dialog(
-                    backgroundColor: const Color.fromARGB(255, 250, 250, 250),
-                    insetPadding: const EdgeInsets.symmetric(
-                        horizontal: 20, vertical: 24),
-                    child: Container(
-                      width: MediaQuery.of(context).size.width * 0.8,
-                      height: MediaQuery.of(context).size.height * 0.8,
-                      decoration: BoxDecoration(
-                        color: const Color.fromARGB(255, 250, 250, 250),
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      child: Column(
-                        children: [
-                          Align(
-                            alignment: Alignment.topRight,
-                            child: IconButton(
-                              icon:
-                              const Icon(Icons.close, color: Colors.black),
-                              onPressed: () => Navigator.of(context).pop(),
-                            ),
+            if (foundDoc != null && mounted) {
+              await showDialog(
+                context: context,
+                builder: (context) => Dialog(
+                  backgroundColor: const Color.fromARGB(255, 250, 250, 250),
+                  insetPadding:
+                      const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+                  child: Container(
+                    width: MediaQuery.of(context).size.width * 0.8,
+                    height: MediaQuery.of(context).size.height * 0.8,
+                    decoration: BoxDecoration(
+                      color: const Color.fromARGB(255, 250, 250, 250),
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Column(
+                      children: [
+                        Align(
+                          alignment: Alignment.topRight,
+                          child: IconButton(
+                            icon: const Icon(Icons.close, color: Colors.black),
+                            onPressed: () => Navigator.of(context).pop(),
                           ),
-                          Expanded(
-                            child: TicketDetailPage(
-                              request: ticketDoc,
-                              adminUsername: adminUsername ?? 'Admin',
-                              enableEnterSubmit: true,
-                            ),
+                        ),
+                        Expanded(
+                          child: TicketDetailPage(
+                            request: foundDoc!,
+                            adminUsername: adminUsername ?? 'Admin',
+                            enableEnterSubmit: true,
                           ),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
                   ),
-                );
-              }
-              return;
+                ),
+              );
             }
+          } finally {
+            _isOpeningRequestDialog = false;
           }
         },
         child: Container(
@@ -1838,15 +1932,26 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
           bottomTitles: AxisTitles(
             sideTitles: SideTitles(
               showTitles: true,
-              reservedSize: 30,
+              reservedSize: 40,
               interval: 1,
               getTitlesWidget: (double value, TitleMeta meta) {
+                final int index = value.toInt();
+                if (index < 0 || index >= _timeLabels.length) {
+                  return const SizedBox.shrink();
+                }
+                final int step = _timeLabels.length <= 6
+                    ? 1
+                    : (_timeLabels.length / 6).ceil();
+                // Show roughly 6 labels to avoid clutter, always show last label
+                if (index % step != 0 && index != _timeLabels.length - 1) {
+                  return const SizedBox.shrink();
+                }
                 return Text(
-                  value.toInt().toString(),
+                  _timeLabels[index],
                   style: const TextStyle(
                     color: Colors.grey,
                     fontWeight: FontWeight.bold,
-                    fontSize: 12,
+                    fontSize: 11,
                   ),
                 );
               },
@@ -1979,6 +2084,8 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
         lineTouchData: LineTouchData(
           enabled: true,
           touchTooltipData: LineTouchTooltipData(
+            fitInsideHorizontally: true,
+            fitInsideVertically: true,
             getTooltipItems: (List<LineBarSpot> touchedBarSpots) {
               return touchedBarSpots.map((barSpot) {
                 String label = '';
